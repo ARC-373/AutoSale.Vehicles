@@ -39,8 +39,8 @@ public sealed class VehicleControllersTests
             handler,
             CancellationToken.None);
 
-        var created = Assert.IsType<CreatedAtActionResult>(result.Result);
-        Assert.Equal(nameof(VehiclesController.GetByIdAsync), created.ActionName);
+        var created = Assert.IsType<CreatedAtRouteResult>(result.Result);
+        Assert.Equal("GetVehicleById", created.RouteName);
         Assert.Equal(vehicleId, created.RouteValues!["id"]);
         Assert.IsType<VehicleResponse>(created.Value);
     }

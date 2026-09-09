@@ -19,6 +19,8 @@ namespace AutoSale.Api.Controllers;
 [Route("api/v1/vehicles")]
 public sealed class VehiclesController : ControllerBase
 {
+    private const string GetVehicleByIdRoute = "GetVehicleById";
+
     [HttpPost]
     [Authorize(Policy = AuthorizationPolicies.AdminOnly)]
     [ProducesResponseType<VehicleResponse>(StatusCodes.Status201Created)]
@@ -38,7 +40,7 @@ public sealed class VehiclesController : ControllerBase
         }
 
         var response = VehicleResponse.FromDto(result.Value!);
-        return CreatedAtAction(nameof(GetByIdAsync), new { id = response.Id }, response);
+        return CreatedAtRoute(GetVehicleByIdRoute, new { id = response.Id }, response);
     }
 
     [HttpPut("{id:guid}")]
@@ -60,7 +62,7 @@ public sealed class VehiclesController : ControllerBase
         return result.ToActionResult(this, VehicleResponse.FromDto);
     }
 
-    [HttpGet("{id:guid}")]
+    [HttpGet("{id:guid}", Name = GetVehicleByIdRoute)]
     [Authorize(Policy = AuthorizationPolicies.AdminOnly)]
     [ProducesResponseType<VehicleResponse>(StatusCodes.Status200OK)]
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]

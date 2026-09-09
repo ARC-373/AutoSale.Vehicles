@@ -1,32 +1,66 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Security.Claims;
+using System.Text.Encodings.Web;
 using System.Text.Json;
+using AutoSale.Api.Authorization;
 using AutoSale.Application.Abstractions.Messaging;
 using AutoSale.Application.Reservations;
 using AutoSale.Application.Vehicles;
+using AutoSale.Application.Vehicles.Create;
 using AutoSale.Application.Vehicles.Reserve;
 using AutoSale.Domain.Reservations;
 using AutoSale.Domain.Vehicles;
 using AutoSale.SharedKernel.Results;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace AutoSale.Vehicles.Api.IntegrationTests;
 
 public sealed class ApiPipelineTests : IClassFixture<ApiPipelineTests.ApiFactory>
 {
     private const string ServiceKey = "integration-test-service-key";
+    private readonly ApiFactory _factory;
     private readonly HttpClient _client;
 
     public ApiPipelineTests(ApiFactory factory)
     {
+        _factory = factory;
         _client = factory.CreateClient(new WebApplicationFactoryClientOptions
         {
             AllowAutoRedirect = false
         });
+    }
+
+    [Fact]
+    public async Task CreateVehicle_ShouldReturnCreatedWithAdministrativeLocation()
+    {
+        var vehicleId = Guid.NewGuid();
+        var dto = new VehicleDto(
+            vehicleId,
+            "Honda",
+            "Civic",
+            2025,
+            "Black",
+            150_000m,
+            VehicleStatus.Available,
+            DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow,
+            1);
+        using var client = _factory.CreateAdminClient(dto);
+
+        var response = await client.PostAsJsonAsync(
+            "/api/v1/vehicles",
+            new { make = "Honda", model = "Civic", year = 2025, color = "Black", price = 150_000m });
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        Assert.Equal($"/api/v1/vehicles/{vehicleId:D}", response.Headers.Location?.AbsolutePath);
     }
 
     [Fact]
@@ -122,6 +156,52 @@ public sealed class ApiPipelineTests : IClassFixture<ApiPipelineTests.ApiFactory
                 services.RemoveAll<ICommandHandler<ReserveVehicleCommand, Result<ReservationResponseDto>>>();
                 services.AddSingleton<ICommandHandler<ReserveVehicleCommand, Result<ReservationResponseDto>>, ReservationHandler>();
             });
+        }
+
+        public HttpClient CreateAdminClient(VehicleDto vehicle) =>
+            WithWebHostBuilder(builder => builder.ConfigureServices(services =>
+            {
+                services.AddAuthentication(options =>
+                    {
+                        options.DefaultAuthenticateScheme = TestAuthenticationHandler.AuthenticationScheme;
+                        options.DefaultChallengeScheme = TestAuthenticationHandler.AuthenticationScheme;
+                    })
+                    .AddScheme<AuthenticationSchemeOptions, TestAuthenticationHandler>(
+                        TestAuthenticationHandler.AuthenticationScheme,
+                        _ => { });
+                services.RemoveAll<ICommandHandler<CreateVehicleCommand, Result<VehicleDto>>>();
+                services.AddSingleton<ICommandHandler<CreateVehicleCommand, Result<VehicleDto>>>(
+                    new CreateVehicleHandler(vehicle));
+            })).CreateClient(new WebApplicationFactoryClientOptions { AllowAutoRedirect = false });
+    }
+
+    private sealed class CreateVehicleHandler(VehicleDto vehicle)
+        : ICommandHandler<CreateVehicleCommand, Result<VehicleDto>>
+    {
+        public Task<Result<VehicleDto>> HandleAsync(
+            CreateVehicleCommand command,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(Result.Success(vehicle));
+    }
+
+    private sealed class TestAuthenticationHandler(
+        IOptionsMonitor<AuthenticationSchemeOptions> options,
+        ILoggerFactory logger,
+        UrlEncoder encoder)
+        : AuthenticationHandler<AuthenticationSchemeOptions>(options, logger, encoder)
+    {
+        public const string AuthenticationScheme = "IntegrationTest";
+
+        protected override Task<AuthenticateResult> HandleAuthenticateAsync()
+        {
+            Claim[] claims =
+            [
+                new(ClaimTypes.NameIdentifier, "integration-test-admin"),
+                new(AuthorizationPolicies.CognitoGroupsClaimType, AuthorizationPolicies.AdministratorsGroup)
+            ];
+            var principal = new ClaimsPrincipal(new ClaimsIdentity(claims, AuthenticationScheme));
+            var ticket = new AuthenticationTicket(principal, AuthenticationScheme);
+            return Task.FromResult(AuthenticateResult.Success(ticket));
         }
     }
 
