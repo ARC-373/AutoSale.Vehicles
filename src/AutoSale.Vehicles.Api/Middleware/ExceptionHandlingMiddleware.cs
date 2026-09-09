@@ -1,5 +1,5 @@
+using AutoSale.Api.Extensions;
 using Microsoft.AspNetCore.Diagnostics;
-using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
 namespace AutoSale.Api.Middleware;
@@ -24,15 +24,7 @@ public sealed class ExceptionHandlingMiddleware : IExceptionHandler
 
         _logger.Log(logLevel, exception, "Request failed with error code {ErrorCode}", code);
 
-        var problem = new ProblemDetails
-        {
-            Status = statusCode,
-            Title = title,
-            Detail = detail,
-            Instance = httpContext.Request.Path
-        };
-        problem.Extensions["code"] = code;
-
+        var problem = ApiProblemDetails.Create(httpContext, statusCode, code, title, detail);
         httpContext.Response.StatusCode = statusCode;
         httpContext.Response.ContentType = "application/problem+json";
         await httpContext.Response.WriteAsJsonAsync(problem, cancellationToken);

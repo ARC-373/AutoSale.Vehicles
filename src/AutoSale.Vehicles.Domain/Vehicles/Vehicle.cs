@@ -40,6 +40,10 @@ public sealed class Vehicle : Entity
 
     public VehicleStatus Status { get; private set; }
 
+    public Guid? ReservationSaleId { get; private set; }
+
+    public Guid? SoldSaleId { get; private set; }
+
     public DateTimeOffset CreatedAtUtc { get; private set; }
 
     public DateTimeOffset UpdatedAtUtc { get; private set; }
@@ -70,11 +74,17 @@ public sealed class Vehicle : Entity
         int year,
         string color,
         decimal price,
+        int expectedVersion,
         DateTimeOffset now)
     {
-        if (Status == VehicleStatus.Sold)
+        if (Status != VehicleStatus.Available)
         {
-            return Result.Failure(VehicleErrors.CannotUpdateSoldVehicle);
+            return Result.Failure(VehicleErrors.CannotUpdateUnavailableVehicle);
+        }
+
+        if (Version != expectedVersion)
+        {
+            return Result.Failure(VehicleErrors.VersionConflict);
         }
 
         var details = ValidateDetails(make, model, year, color, price, now);
@@ -95,18 +105,95 @@ public sealed class Vehicle : Entity
         return Result.Success();
     }
 
-    public Result MarkAsSold(DateTimeOffset now)
+    public Result Reserve(Guid saleId, decimal expectedPrice, DateTimeOffset now)
     {
         if (Status != VehicleStatus.Available)
+        {
+            return Result.Failure(VehicleErrors.NotAvailable);
+        }
+
+        if (saleId == Guid.Empty)
+        {
+            return Result.Failure(VehicleErrors.InvalidSaleId);
+        }
+
+        if (expectedPrice != Price)
+        {
+            return Result.Failure(VehicleErrors.PriceMismatch);
+        }
+
+        Status = VehicleStatus.Reserved;
+        ReservationSaleId = saleId;
+        Touch(now);
+
+        return Result.Success();
+    }
+
+    public Result ConfirmSale(Guid saleId, DateTimeOffset now)
+    {
+        if (saleId == Guid.Empty)
+        {
+            return Result.Failure(VehicleErrors.InvalidSaleId);
+        }
+
+        if (Status == VehicleStatus.Sold)
+        {
+            return SoldSaleId == saleId
+                ? Result.Success()
+                : Result.Failure(VehicleErrors.SoldByAnotherSale);
+        }
+
+        if (Status != VehicleStatus.Reserved)
+        {
+            return Result.Failure(VehicleErrors.NotReserved);
+        }
+
+        if (ReservationSaleId != saleId)
+        {
+            return Result.Failure(VehicleErrors.ReservationOwnerMismatch);
+        }
+
+        Status = VehicleStatus.Sold;
+        ReservationSaleId = null;
+        SoldSaleId = saleId;
+        Touch(now);
+
+        return Result.Success();
+    }
+
+    public Result ReleaseReservation(Guid saleId, DateTimeOffset now)
+    {
+        if (saleId == Guid.Empty)
+        {
+            return Result.Failure(VehicleErrors.InvalidSaleId);
+        }
+
+        if (Status == VehicleStatus.Available)
+        {
+            return Result.Failure(VehicleErrors.NotReserved);
+        }
+
+        if (Status == VehicleStatus.Sold)
         {
             return Result.Failure(VehicleErrors.AlreadySold);
         }
 
-        Status = VehicleStatus.Sold;
-        UpdatedAtUtc = now.ToUniversalTime();
-        Version++;
+        if (ReservationSaleId != saleId)
+        {
+            return Result.Failure(VehicleErrors.ReservationOwnerMismatch);
+        }
+
+        Status = VehicleStatus.Available;
+        ReservationSaleId = null;
+        Touch(now);
 
         return Result.Success();
+    }
+
+    private void Touch(DateTimeOffset now)
+    {
+        UpdatedAtUtc = now.ToUniversalTime();
+        Version++;
     }
 
     private static Result<VehicleDetails> ValidateDetails(

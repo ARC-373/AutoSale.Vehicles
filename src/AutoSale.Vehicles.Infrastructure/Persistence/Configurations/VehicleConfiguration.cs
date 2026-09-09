@@ -8,7 +8,17 @@ public sealed class VehicleConfiguration : IEntityTypeConfiguration<Vehicle>
 {
     public void Configure(EntityTypeBuilder<Vehicle> builder)
     {
-        builder.ToTable("vehicles", table => table.HasCheckConstraint("ck_vehicles_price_positive", "price > 0"));
+        builder.ToTable("vehicles", table =>
+        {
+            table.HasCheckConstraint("ck_vehicles_price_positive", "price > 0");
+            table.HasCheckConstraint("ck_vehicles_year", "year >= 1886");
+            table.HasCheckConstraint("ck_vehicles_version", "version > 0");
+            table.HasCheckConstraint(
+                "ck_vehicles_status_references",
+                "(status = 'Available' AND reservation_sale_id IS NULL AND sold_sale_id IS NULL) OR " +
+                "(status = 'Reserved' AND reservation_sale_id IS NOT NULL AND sold_sale_id IS NULL) OR " +
+                "(status = 'Sold' AND reservation_sale_id IS NULL AND sold_sale_id IS NOT NULL)");
+        });
 
         builder.HasKey(vehicle => vehicle.Id);
 
@@ -47,6 +57,12 @@ public sealed class VehicleConfiguration : IEntityTypeConfiguration<Vehicle>
             .HasConversion<string>()
             .HasMaxLength(20)
             .IsRequired();
+
+        builder.Property(vehicle => vehicle.ReservationSaleId)
+            .HasColumnName("reservation_sale_id");
+
+        builder.Property(vehicle => vehicle.SoldSaleId)
+            .HasColumnName("sold_sale_id");
 
         builder.Property(vehicle => vehicle.CreatedAtUtc)
             .HasColumnName("created_at_utc")

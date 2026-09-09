@@ -31,17 +31,16 @@ public static class ResultExtensions
             ErrorType.Conflict => StatusCodes.Status409Conflict,
             ErrorType.Unauthorized => StatusCodes.Status401Unauthorized,
             ErrorType.Forbidden => StatusCodes.Status403Forbidden,
+            ErrorType.Failure => StatusCodes.Status503ServiceUnavailable,
             _ => StatusCodes.Status500InternalServerError
         };
 
-        var problem = new ProblemDetails
-        {
-            Status = statusCode,
-            Title = error.Type.ToString(),
-            Detail = error.Description,
-            Instance = controller.HttpContext.Request.Path
-        };
-        problem.Extensions["code"] = error.Code;
+        var problem = ApiProblemDetails.Create(
+            controller.HttpContext,
+            statusCode,
+            error.Code,
+            error.Type.ToString(),
+            error.Description);
 
         return new ObjectResult(problem) { StatusCode = statusCode };
     }

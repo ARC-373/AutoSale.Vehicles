@@ -1,4 +1,6 @@
+using AutoSale.Api.Authentication;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Authorization.Policy;
 
 namespace AutoSale.Api.Authorization;
 
@@ -14,7 +16,14 @@ public static class AuthorizationExtensions
                     .FindAll(AuthorizationPolicies.CognitoGroupsClaimType)
                     .SelectMany(claim => claim.Value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
                     .Contains(AuthorizationPolicies.AdministratorsGroup, StringComparer.Ordinal));
+            })
+            .AddPolicy(AuthorizationPolicies.InternalSales, policy =>
+            {
+                policy.AddAuthenticationSchemes(ServiceKeyAuthenticationDefaults.Scheme);
+                policy.RequireAuthenticatedUser();
             });
+
+        services.AddSingleton<IAuthorizationMiddlewareResultHandler, ProblemDetailsAuthorizationMiddlewareResultHandler>();
 
         return services;
     }

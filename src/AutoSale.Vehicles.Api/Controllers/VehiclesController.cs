@@ -6,7 +6,8 @@ using AutoSale.Application.Abstractions.Messaging;
 using AutoSale.Application.Common;
 using AutoSale.Application.Vehicles;
 using AutoSale.Application.Vehicles.Create;
-using AutoSale.Application.Vehicles.ListAvailable;
+using AutoSale.Application.Vehicles.GetById;
+using AutoSale.Application.Vehicles.List;
 using AutoSale.Application.Vehicles.Update;
 using AutoSale.SharedKernel.Results;
 using Microsoft.AspNetCore.Authorization;
@@ -31,7 +32,13 @@ public sealed class VehiclesController : ControllerBase
     {
         var command = new CreateVehicleCommand(request.Make, request.Model, request.Year, request.Color, request.Price);
         var result = await handler.HandleAsync(command, cancellationToken);
-        return result.ToActionResult(this, VehicleResponse.FromDto, StatusCodes.Status201Created);
+        if (result.IsFailure)
+        {
+            return ResultExtensions.ToProblem(result.Error, this);
+        }
+
+        var response = VehicleResponse.FromDto(result.Value!);
+        return CreatedAtAction(nameof(GetByIdAsync), new { id = response.Id }, response);
     }
 
     [HttpPut("{id:guid}")]
@@ -48,22 +55,40 @@ public sealed class VehiclesController : ControllerBase
         [FromServices] ICommandHandler<UpdateVehicleCommand, Result<VehicleDto>> handler,
         CancellationToken cancellationToken)
     {
-        var command = new UpdateVehicleCommand(id, request.Make, request.Model, request.Year, request.Color, request.Price);
+        var command = new UpdateVehicleCommand(id, request.Make, request.Model, request.Year, request.Color, request.Price, request.Version);
         var result = await handler.HandleAsync(command, cancellationToken);
         return result.ToActionResult(this, VehicleResponse.FromDto);
     }
 
-    [HttpGet("available")]
-    [AllowAnonymous]
-    [ProducesResponseType<PagedResponse<VehicleResponse>>(StatusCodes.Status200OK)]
+    [HttpGet("{id:guid}")]
+    [Authorize(Policy = AuthorizationPolicies.AdminOnly)]
+    [ProducesResponseType<VehicleResponse>(StatusCodes.Status200OK)]
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
-    public async Task<ActionResult<PagedResponse<VehicleResponse>>> ListAvailableAsync(
-        [FromQuery] int? page,
-        [FromQuery] int? pageSize,
-        [FromServices] IQueryHandler<ListAvailableVehiclesQuery, Result<PagedResult<VehicleDto>>> handler,
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<VehicleResponse>> GetByIdAsync(
+        Guid id,
+        [FromServices] IQueryHandler<GetVehicleByIdQuery, Result<VehicleDto>> handler,
         CancellationToken cancellationToken)
     {
-        var query = new ListAvailableVehiclesQuery(page ?? 1, pageSize ?? 20);
+        var result = await handler.HandleAsync(new GetVehicleByIdQuery(id), cancellationToken);
+        return result.ToActionResult(this, VehicleResponse.FromDto);
+    }
+
+    [HttpGet]
+    [Authorize(Policy = AuthorizationPolicies.AdminOnly)]
+    [ProducesResponseType<PagedResponse<VehicleResponse>>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status403Forbidden)]
+    public async Task<ActionResult<PagedResponse<VehicleResponse>>> ListAsync(
+        [FromQuery] int? page,
+        [FromQuery] int? pageSize,
+        [FromServices] IQueryHandler<ListVehiclesQuery, Result<PagedResult<VehicleDto>>> handler,
+        CancellationToken cancellationToken)
+    {
+        var query = new ListVehiclesQuery(page ?? 1, pageSize ?? 20);
         var result = await handler.HandleAsync(query, cancellationToken);
         return result.ToActionResult(this, pageResult => PagedResponse<VehicleResponse>.From(pageResult, VehicleResponse.FromDto));
     }

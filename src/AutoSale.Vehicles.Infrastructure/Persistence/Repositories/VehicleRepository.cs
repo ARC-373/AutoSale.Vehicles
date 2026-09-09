@@ -18,7 +18,7 @@ public sealed class VehicleRepository : IVehicleRepository
     public Task<Vehicle?> GetByIdAsync(Guid id, CancellationToken cancellationToken) =>
         _dbContext.Vehicles.SingleOrDefaultAsync(vehicle => vehicle.Id == id, cancellationToken);
 
-    public Task<Vehicle?> GetByIdForPurchaseAsync(Guid id, CancellationToken cancellationToken) =>
+    public Task<Vehicle?> GetByIdForUpdateAsync(Guid id, CancellationToken cancellationToken) =>
         _dbContext.Vehicles
             .FromSqlInterpolated($"SELECT * FROM vehicles WHERE id = {id} FOR UPDATE")
             .SingleOrDefaultAsync(cancellationToken);
@@ -28,12 +28,15 @@ public sealed class VehicleRepository : IVehicleRepository
         await _dbContext.Vehicles.AddAsync(vehicle, cancellationToken);
     }
 
-    public async Task<PagedResult<VehicleDto>> ListAvailableAsync(int page, int pageSize, CancellationToken cancellationToken)
-    {
-        var query = _dbContext.Vehicles
-            .AsNoTracking()
-            .Where(vehicle => vehicle.Status == VehicleStatus.Available);
+    public Task<PagedResult<VehicleDto>> ListAsync(int page, int pageSize, CancellationToken cancellationToken) =>
+        ListAsync(_dbContext.Vehicles.AsNoTracking(), page, pageSize, cancellationToken);
 
+    private static async Task<PagedResult<VehicleDto>> ListAsync(
+        IQueryable<Vehicle> query,
+        int page,
+        int pageSize,
+        CancellationToken cancellationToken)
+    {
         var totalCount = await query.CountAsync(cancellationToken);
         var items = await query
             .OrderBy(vehicle => vehicle.Price)
