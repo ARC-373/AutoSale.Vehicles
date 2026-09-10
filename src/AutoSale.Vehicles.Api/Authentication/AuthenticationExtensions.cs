@@ -39,7 +39,10 @@ public static class AuthenticationExtensions
                         return Task.CompletedTask;
                     }
                 };
-            });
+            })
+            .AddScheme<ServiceKeyAuthenticationOptions, ServiceKeyAuthenticationHandler>(
+                ServiceKeyAuthenticationDefaults.Scheme,
+                options => configuration.GetSection("ServiceAuthentication").Bind(options));
 
         return services;
     }

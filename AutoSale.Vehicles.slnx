@@ -22,5 +22,23 @@
     <Project Path="src/BuildingBlocks/AutoSale.SharedKernel/AutoSale.SharedKernel.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/AutoSale.Vehicles.Api.IntegrationTests/AutoSale.Vehicles.Api.IntegrationTests.csproj">
+      <Build Solution="Debug|*" Project="false" />
+    </Project>
+    <Project Path="tests/AutoSale.Vehicles.Api.UnitTests/AutoSale.Vehicles.Api.UnitTests.csproj">
+      <Build Solution="Debug|*" Project="false" />
+    </Project>
+    <Project Path="tests/AutoSale.Vehicles.Application.UnitTests/AutoSale.Vehicles.Application.UnitTests.csproj">
+      <Build Solution="Debug|*" Project="false" />
+    </Project>
+    <Project Path="tests/AutoSale.Vehicles.ArchitectureTests/AutoSale.Vehicles.ArchitectureTests.csproj">
+      <Build Solution="Debug|*" Project="false" />
+    </Project>
+    <Project Path="tests/AutoSale.Vehicles.Domain.UnitTests/AutoSale.Vehicles.Domain.UnitTests.csproj">
+      <Build Solution="Debug|*" Project="false" />
+    </Project>
+    <Project Path="tests/AutoSale.Vehicles.Infrastructure.UnitTests/AutoSale.Vehicles.Infrastructure.UnitTests.csproj">
+      <Build Solution="Debug|*" Project="false" />
+    </Project>
   </Folder>
 </Solution>

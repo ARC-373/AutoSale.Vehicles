@@ -12,6 +12,11 @@ public static class UpdateVehicleValidator
             return Result.Failure(ApplicationErrors.InvalidVehicleId);
         }
 
+        if (command.Version <= 0)
+        {
+            return Result.Failure(ApplicationErrors.InvalidVehicleVersion);
+        }
+
         return Result.Success();
     }
 }

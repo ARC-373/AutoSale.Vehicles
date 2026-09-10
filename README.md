@@ -1,321 +1,307 @@
-# FIAP Auto Sales API
+# AutoSale: Serviço de Veículos
 
-API REST para a plataforma de revenda de veículos do Tech Challenge da FIAP (SOAT Fase 3 Prova Substitutiva). A solução permite que administradores cadastrem e atualizem veículos e que compradores previamente cadastrados no Amazon Cognito consultem o catálogo e finalizem uma compra de forma segura.
+API REST do Serviço de Veículos da Prova Substitutiva do Tech Challenge FIAP Pós-Tech SOAT Fase 4.
+
+Este repositório contém exclusivamente o microsserviço responsável pelo cadastro, atualização e ciclo de vida dos veículos. As funcionalidades de venda e pagamento pertencem ao repositório parceiro [AutoSale.Sales](https://github.com/ARC-373/AutoSale.Sales). Os dois serviços possuem código, execução e bancos de dados independentes e comunicam-se por APIs REST.
 
 ## Índice
 
-- [Sobre o projeto](#sobre-o-projeto)
+- [Responsabilidades e escopo](#responsabilidades-e-escopo)
 - [Funcionalidades](#funcionalidades)
 - [Tecnologias e arquitetura](#tecnologias-e-arquitetura)
 - [Estrutura da aplicação](#estrutura-da-aplicação)
 - [Execução local](#execução-local)
-- [Documentação e autenticação no Scalar](#documentação-e-autenticação-no-scalar)
+- [Documentação no Scalar](#documentação-no-scalar)
 - [Endpoints principais](#endpoints-principais)
-- [Fluxo de compra](#fluxo-de-compra)
-- [Estratégia de autenticação](#estratégia-de-autenticação)
+- [Ciclo de vida do veículo](#ciclo-de-vida-do-veículo)
+- [Integração com Vendas](#integração-com-vendas)
+- [Autenticação e autorização](#autenticação-e-autorização)
 - [Modelagem do banco](#modelagem-do-banco)
 - [Testes](#testes)
 - [CI/CD](#cicd)
-- [Observabilidade e operação](#observabilidade-e-operação)
-- [Limites do escopo](#limites-do-escopo)
+- [Observabilidade](#observabilidade)
 
-## Sobre o projeto
+## Responsabilidades e escopo
 
-Uma revenda de veículos precisa disponibilizar seu catálogo na internet e permitir que clientes já cadastrados efetuem compras. O desafio exige preservar a separação entre dados de identidade e dados transacionais, evitar a venda duplicada de um mesmo veículo e disponibilizar uma entrega reproduzível por CI/CD.
+O Serviço de Veículos é a fonte de verdade dos dados e da disponibilidade de cada veículo. Nesta versão, suas operações de usuário são restritas a integrantes do grupo Cognito `admins`, que podem cadastrar e atualizar veículos disponíveis, consultar o catálogo completo e acompanhar todas as reservas ou o histórico de um veículo.
 
-A FIAP Auto Sales API resolve esse cenário como um monólito modular. O Amazon Cognito é responsável pelo cadastro, confirmação e autenticação dos usuários; a aplicação não armazena senhas, CPF, nome ou e-mail de compradores. O PostgreSQL mantém apenas os veículos, as vendas e o identificador opaco (`sub`) de quem comprou.
+O serviço também oferece uma API interna, acessível apenas pelo Serviço de Vendas, para reservar um veículo, confirmar sua venda ou liberar sua reserva. Clientes finais não compram veículos diretamente nesta API. Processo de venda, pagamento e webhook do provedor de pagamentos são responsabilidades do [AutoSale.Sales](https://github.com/ARC-373/AutoSale.Sales).
 
 ## Funcionalidades
 
-| Área | Funcionalidade | Como funciona |
+| Área | Funcionalidade | Comportamento |
 | --- | --- | --- |
-| Veículos | Cadastro | Usuários do grupo Cognito `admins` criam veículos com marca, modelo, ano, cor e preço. |
-| Veículos | Edição | Administradores atualizam os dados enquanto o veículo estiver disponível. Veículos vendidos não podem ser alterados. |
-| Veículos | Catálogo disponível | Qualquer pessoa pode consultar veículos disponíveis, com paginação e ordenação por preço crescente. |
-| Compras | Compra autenticada | Um usuário autenticado compra um veículo disponível; a venda registra o preço praticado e o `sub` do comprador. |
-| Compras | Catálogo de vendidos | Qualquer pessoa pode consultar as vendas, também em ordem crescente de preço e com paginação. |
-| Consistência | Proteção contra duplicidade | A compra usa transação, bloqueio da linha do veículo (`FOR UPDATE`) e restrições únicas no banco para que apenas uma compra seja efetivada. |
-| Autenticação | OIDC/JWT | A API valida *access tokens* emitidos pelo Cognito. Operações administrativas exigem o grupo `admins`. |
+| Administração | Cadastrar veículo | Cria marca, modelo, ano, cor e preço no estado `Available`. |
+| Administração | Atualizar veículo | Altera dados mediante controle por `version`; somente veículos disponíveis podem ser editados. |
+| Administração | Consultar veículos | Lista o catálogo paginado ou consulta um veículo pelo identificador. |
+| Administração | Acompanhar reservas | Lista todas as reservas ou o histórico de um veículo, com snapshots e estados `Reserved`, `Confirmed` e `Released`. |
+| Integração | Reservar veículo | Vendas informa `saleId` e preço esperado; a operação bloqueia o veículo e é idempotente para a mesma solicitação. |
+| Integração | Confirmar venda | Converte a reserva válida em venda confirmada e muda o veículo para `Sold`. |
+| Integração | Liberar reserva | Cancela reserva não confirmada e devolve o veículo a `Available`. |
+| Sincronização | Publicar catálogo | Registra mudanças em transactional outbox e as envia a Vendas com retentativas. |
+| Operação | Saúde e telemetria | Expõe health checks e envia traces e métricas via OpenTelemetry. |
 
 ## Tecnologias e arquitetura
 
-- .NET 10 e ASP.NET Core Web API
-- Entity Framework Core 10 e Npgsql
-- PostgreSQL 16
-- Amazon Cognito (OIDC/OAuth 2.0 e JWT)
-- Scalar e OpenAPI para documentação interativa
-- Docker e Docker Compose
-- OpenTelemetry e OpenTelemetry Collector
-- xUnit para testes unitários e de arquitetura
-- GitHub Actions para integração contínua, build da imagem e validação do ambiente Docker
+- .NET 10, ASP.NET Core Web API, Entity Framework Core 10 e Npgsql;
+- PostgreSQL 16 exclusivo deste serviço;
+- Amazon Cognito (OIDC/OAuth 2.0 e JWT) para administradores;
+- chave no cabeçalho `X-Service-Key` para comunicação entre microsserviços;
+- OpenAPI, Scalar, Docker, Docker Compose e OpenTelemetry;
+- xUnit para testes de domínio, aplicação, API, infraestrutura, integração e arquitetura;
+- GitHub Actions para build, testes e validação do Docker Compose.
 
-### Arquitetura
+### Arquitetura de microsserviços
 
-O projeto adota Clean Architecture em um monólito modular: as regras de negócio ficam no centro e não dependem de HTTP, banco de dados ou Cognito. As dependências apontam sempre para dentro; essa regra é coberta pelos testes de arquitetura.
+A solução da Fase 4 é composta por microsserviços independentes. Veículos e Vendas são implantáveis separadamente, possuem responsabilidades e bancos segregados e trocam dados por HTTP/REST. Uma indisponibilidade temporária de Vendas não desfaz alterações confirmadas em Veículos: o transactional outbox conserva os eventos de catálogo para publicação posterior.
 
-![Diagrama da arquitetura da FIAP Auto Sales API](docs/architecture/autosale-architecture.png)
+Internamente, este microsserviço usa Clean Architecture. As dependências apontam para as camadas centrais, limite verificado por testes automatizados.
+
+![Diagrama da arquitetura do AutoSale](docs/architecture/autosale-architecture.png)
 
 | Camada | Responsabilidade |
 | --- | --- |
-| **Domain** | Entidades `Vehicle` e `Sale`, seus estados e invariantes: preço positivo, ano válido, veículo vendido não é editável nem vendido novamente. Não depende de frameworks. |
-| **Application** | Casos de uso, DTOs e contratos (portas) de repositórios, relógio, usuário atual e unidade de trabalho. Orquestra cadastro, edição, listagens e compra. |
-| **Infra** | Implementações técnicas das portas: EF Core/Npgsql, repositórios PostgreSQL, migrations, transações e relógio do sistema. |
-| **SharedKernel** | Tipos mínimos reutilizáveis e independentes, como `Entity`, `Result`, `Error` e `ErrorType`. |
-| **API** | Controllers REST, contratos HTTP, tratamento de erros com `ProblemDetails`, composição de dependências, OpenAPI/Scalar, autenticação e autorização. |
+| **Domain** | `Vehicle`, `VehicleReservation` e `CatalogOutbox`, seus estados, transições e invariantes. |
+| **Application** | Casos de uso, DTOs e portas para persistência, relógio e integração com Vendas. |
+| **Infrastructure** | EF Core/PostgreSQL, repositórios, transações, migrations, cliente HTTP, outbox e worker. |
+| **SharedKernel** | Tipos independentes como `Entity`, `Result`, `Error` e `ErrorType`. |
+| **API** | Controllers, contratos, autenticação, autorização, `ProblemDetails`, Scalar e health checks. |
 
 ## Estrutura da aplicação
 
 ```text
-AutoSale/
-├── .github/workflows/ci.yml              # Pipeline do GitHub Actions
+AutoSale.Vehicles/
+├── .github/workflows/ci.yml
 ├── docs/
-│   ├── architecture/autosale-architecture.png
-│   └── spec/                              # Enunciado e planejamento do Tech Challenge
+│   ├── architecture/
+│   ├── readme/                         # Evidências da documentação interativa
+│   └── spec/                           # Definições do Tech Challenge
 ├── src/
-│   ├── AutoSale.Api/                      # HTTP, Scalar, JWT e policies
-│   │   ├── Authentication/
-│   │   ├── Authorization/
-│   │   ├── Controllers/
-│   │   ├── Contracts/
+│   ├── AutoSale.Vehicles.Api/
+│   │   ├── Authentication/  Authorization/  Contracts/
+│   │   ├── Controllers/  Extensions/  Middleware/
 │   │   └── Program.cs
-│   ├── AutoSale.Application/              # Casos de uso e abstrações
-│   │   ├── Abstractions/
-│   │   ├── Sales/
+│   ├── AutoSale.Vehicles.Application/
+│   │   ├── Abstractions/  Catalog/  Common/  Reservations/
 │   │   └── Vehicles/
-│   ├── AutoSale.Domain/                   # Regras e entidades de negócio
-│   │   ├── Sales/
-│   │   └── Vehicles/
-│   ├── AutoSale.Infrastructure/           # EF Core, PostgreSQL e migrations
+│   ├── AutoSale.Vehicles.Domain/
+│   │   ├── Catalog/  Reservations/  Vehicles/
+│   ├── AutoSale.Vehicles.Infrastructure/
+│   │   ├── BackgroundServices/  Clock/  Integrations/Sales/
 │   │   └── Persistence/
 │   └── BuildingBlocks/AutoSale.SharedKernel/
 ├── tests/
-│   ├── AutoSale.Domain.UnitTests/
-│   ├── AutoSale.Application.UnitTests/
-│   ├── AutoSale.ArchitectureTests/
-│   └── AutoSale.Api.IntegrationTests/
+│   ├── AutoSale.Vehicles.Api.IntegrationTests/
+│   ├── AutoSale.Vehicles.Api.UnitTests/
+│   ├── AutoSale.Vehicles.Application.UnitTests/
+│   ├── AutoSale.Vehicles.ArchitectureTests/
+│   ├── AutoSale.Vehicles.Domain.UnitTests/
+│   └── AutoSale.Vehicles.Infrastructure.UnitTests/
 ├── docker-compose.yml
 ├── otel-collector-config.yaml
-└── AutoSale.slnx
+└── AutoSale.Vehicles.slnx
 ```
 
 ## Execução local
 
 ### Usuários de teste no Cognito
-| Usuário | Senha | Grupo | Observações |
-| --- | --- | --- | --- |
+| Usuário          | Senha       | Grupo    | Observações                    |
+| ---------------- | ----------- | -------- | ------------------------------ |
 | `admin.autosale` | `!Fiap2026` | `admins` | Usuário administrador de teste |
-| `buyer.autosale` | `!Fiap2026` | -- | Usuário comprador de teste. |
+| `buyer.autosale` | `!Fiap2026` | --       | Usuário comprador de teste.    |
 
 Outros usuários cadastrados se classificam como compradores.
 
 ### Pré-requisitos
 
-- [Git](https://git-scm.com/)
-- [Docker Desktop](https://www.docker.com/products/docker-desktop/) em execução, com Docker Compose v2
-- Opcional para executar os testes fora do container: SDK do .NET 10
-- Uma conta de comprador confirmada no Cognito para testar a compra e uma conta no grupo `admins` para cadastrar ou editar veículos
+- [Git](https://git-scm.com/);
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/) com Docker Compose v2 ou gerenciador de containers equivalente;
+- opcionalmente, SDK do .NET 10 para executar testes fora dos containers;
+- conta do Amazon Cognito no grupo `admins` para testar endpoints administrativos.
 
-### Subir o ambiente
+### Subir os dois microsserviços
 
-Na raiz do repositório, execute:
+Clone os repositórios como diretórios irmãos:
 
 ```powershell
-git clone https://github.com/ARC-373/FIAP-AutoSale.git
-Set-Location FIAP-AutoSale
+git clone https://github.com/ARC-373/AutoSale.Vehicles.git
+git clone https://github.com/ARC-373/AutoSale.Sales.git
+```
+
+Inicie o Serviço de Veículos:
+
+```powershell
+Set-Location AutoSale.Vehicles
 docker compose up --build -d
 ```
 
-O arquivo `.env` já contém as configurações locais de portas e as configurações públicas do Cognito.
+Em outro terminal, inicie o Serviço de Vendas:
 
-O Compose inicia os seguintes serviços:
+```powershell
+Set-Location AutoSale.Sales
+docker compose up --build -d
+```
 
-| Serviço | Endereço local | Finalidade |
-| --- | --- | --- |
-| API | <http://localhost:8080> | API REST, Scalar e health check. |
-| PostgreSQL | `localhost:5432` | Persistência transacional. |
-| pgAdmin | <http://localhost:5050> | Inspeção local opcional do banco. |
-| OpenTelemetry Collector | `localhost:4317` (gRPC) / `4318` (HTTP) | Recebe traces e métricas da API. |
+Cada repositório possui seu `.env` e PostgreSQL próprios. Configure os mesmos valores complementares para:
 
-As migrations do EF Core são aplicadas automaticamente na inicialização do container da API. Confirme a disponibilidade com:
+- `SALES_TO_VEHICLES_SERVICE_KEY`: autentica Vendas perante Veículos;
+- `VEHICLES_TO_SALES_SERVICE_KEY`: autentica Veículos perante Vendas;
+- `SALES_BASE_ADDRESS`: endereço interno da API de Vendas;
+- `CATALOG_PUBLISHER_ENABLED=true`: habilita a sincronização assíncrona do catálogo.
+
+A versão disponibilizada no repositório já inclui valores válidas e pareados de variáveis de ambiente para que as duas aplicações se comuniquem corretamente.
+Os Compose conectam as APIs à rede Docker compartilhada `autosale-integration`. Só execute os testes ponta a ponta depois que os dois ambientes estiverem saudáveis. 
+  
+
+No Serviço de Veículos, confira e opere o ambiente com:
 
 ```powershell
 Invoke-WebRequest http://localhost:8080/health
-```
-
-### Encerrar ou reiniciar o ambiente
-
-Para interromper os containers sem remover os dados do PostgreSQL e do pgAdmin:
-
-```powershell
+Invoke-WebRequest http://localhost:8080/health/live
+docker compose ps
+docker compose logs vehicles-api
 docker compose down
 ```
 
-Para reiniciar o ambiente preservando os volumes:
+As migrations são aplicadas na inicialização da API. Para remover também os volumes, use conscientemente `docker compose down --volumes --remove-orphans`.
 
-```powershell
-docker compose up --build -d
-```
+## Documentação no Scalar
 
-Para descartar também os dados locais e recomeçar do zero (ação destrutiva):
+Com Veículos em execução, acesse <http://localhost:8080/docs/>. O OpenAPI fica em <http://localhost:8080/openapi/v1.json>.
 
-```powershell
-docker compose down --volumes --remove-orphans
-```
-
-## Documentação e autenticação no Scalar
-
-Com o ambiente em execução, abra <http://localhost:8080/docs/>. A UI do Scalar expõe o OpenAPI da API e o esquema OAuth `CognitoOAuth`.
-
-### Login pelo Cognito no Scalar
-
-1. No Scalar, abra **Authentication** e selecione `CognitoOAuth`.
-2. Clique em **Authorize** e conclua o login na Hosted UI do Cognito.
-3. O fluxo Authorization Code usa PKCE e solicita os escopos `openid`, `profile` e `email`.
-4. Após a autorização, execute o endpoint desejado. Para criar/editar, o usuário autenticado deve pertencer ao grupo `admins` no Cognito.
-
-> **Evidência da autenticação no Scalar**
+Para operações administrativas, abra **Authentication**, selecione `CognitoOAuth`, autorize com uma conta do grupo `admins` e use o *access token*. Os endpoints internos apresentam o esquema `ServiceKey`, destinado somente aos microsserviços.
 
 ![Scalar inicial](docs/readme/scalar.jpg)
-![Scalar popup login](docs/readme/scalar2.jpg)
+![Autenticação no Scalar](docs/readme/scalar2.jpg)
 ![Scalar autenticado](docs/readme/scalar3.jpg)
-
-### Alternativa: obter um token no PowerShell
-
-Obtenha um *access token* com a AWS CLI instalada e configurada:
-
-```powershell
-$clientId = '3kmefe75etgo71ffeblpqbjpn5'
-$username = Read-Host 'Usuário Cognito'
-$securePassword = Read-Host 'Senha Cognito' -AsSecureString
-$password = [System.Net.NetworkCredential]::new('', $securePassword).Password
-
-$auth = aws cognito-idp initiate-auth `
-  --region sa-east-1 `
-  --auth-flow USER_PASSWORD_AUTH `
-  --client-id $clientId `
-  --auth-parameters "USERNAME=$username,PASSWORD=$password" | ConvertFrom-Json
-
-$accessToken = $auth.AuthenticationResult.AccessToken
-$accessToken
-```
-
-No Scalar, adicione o cabeçalho `Authorization` à requisição e informe `Bearer <accessToken>`. Use o **access token**, não o `id_token`: a API valida o *claim* `token_use=access` e o `client_id` esperado. Nunca compartilhe ou versione o token gerado.
 
 ## Endpoints principais
 
-Os retornos de erro seguem o padrão `ProblemDetails`. As listagens aceitam `page` (padrão `1`) e `pageSize` (padrão `20`, máximo `100`).
+Erros seguem `ProblemDetails`. Listagens aceitam `page` (padrão `1`) e `pageSize` (padrão `20`, máximo `100`).
+
+### Operações administrativas
 
 | Método e rota | Permissão | Descrição |
 | --- | --- | --- |
-| `POST /api/v1/vehicles` | JWT + grupo `admins` | Cadastra um veículo disponível. Retorna `201 Created`. |
-| `PUT /api/v1/vehicles/{id}` | JWT + grupo `admins` | Atualiza os dados de um veículo disponível. Retorna `409 Conflict` se o veículo já foi vendido. |
-| `GET /api/v1/vehicles/available` | Pública | Lista veículos disponíveis por preço crescente e, em caso de empate, por `id`. |
-| `POST /api/v1/vehicles/{id}/purchase` | JWT válido | Efetiva a compra de um veículo. Aceita `Idempotency-Key` no cabeçalho ou no corpo. Retorna `409 Conflict` se já vendido. |
-| `GET /api/v1/sales/sold` | Pública | Lista vendas por preço crescente e, em caso de empate, por `id`. |
-| `GET /health` | Pública | Verifica a saúde da aplicação e a conectividade com o PostgreSQL. |
+| `POST /api/v1/vehicles` | JWT + `admins` | Cadastra veículo; retorna `201 Created`. |
+| `PUT /api/v1/vehicles/{id}` | JWT + `admins` | Atualiza veículo disponível, validando `version`. |
+| `GET /api/v1/vehicles/{id}` | JWT + `admins` | Consulta dados e estado do veículo. |
+| `GET /api/v1/vehicles?page=1&pageSize=20` | JWT + `admins` | Lista veículos por preço e identificador. |
+| `GET /api/v1/reservations?page=1&pageSize=20` | JWT + `admins` | Lista todas as reservas. |
+| `GET /api/v1/vehicles/{vehicleId}/reservations?page=1&pageSize=20` | JWT + `admins` | Lista reservas do veículo. |
 
-### Cadastrar ou atualizar veículo
+### Integração com o Serviço de Vendas
 
-Use o mesmo corpo para `POST /api/v1/vehicles` e `PUT /api/v1/vehicles/{id}`:
+| Método e rota | Permissão | Descrição |
+| --- | --- | --- |
+| `PUT /internal/v1/vehicles/{vehicleId}/reservations/{saleId}` | `X-Service-Key` | Reserva pelo preço esperado; retorna `201` ao criar ou `200` na repetição idempotente. |
+| `PUT /internal/v1/vehicles/{vehicleId}/reservations/{saleId}/confirmation` | `X-Service-Key` | Confirma a reserva e marca o veículo como vendido. |
+| `PUT /internal/v1/vehicles/{vehicleId}/reservations/{saleId}/release` | `X-Service-Key` | Libera a reserva e torna o veículo disponível. |
+| `PUT /internal/v1/catalog/vehicles/{vehicleId}` | chave enviada por Veículos | Endpoint hospedado em Vendas, chamado pelo worker para atualizar sua projeção. |
+
+Também são públicos `GET /health` (API e PostgreSQL) e `GET /health/live` (processo).
+
+### Exemplos
+
+Cadastro:
 
 ```json
 {
   "make": "Toyota",
   "model": "Corolla XEi",
-  "year": 2025,
+  "year": 2026,
   "color": "Prata",
   "price": 149990.00
 }
 ```
 
-`make` e `model` aceitam até 120 caracteres; `color`, até 50; o ano precisa estar entre 1886 e o próximo ano-calendário; e o preço deve ser positivo, com no máximo duas casas decimais.
-
-### Efetivar compra
-
-```http
-POST /api/v1/vehicles/{id}/purchase
-Authorization: Bearer <access-token>
-Idempotency-Key: compra-corolla-0001
-Content-Type: application/json
-```
-
-O corpo é opcional. Quando necessário, a chave de idempotência também pode ser enviada nele:
+Atualização com controle otimista:
 
 ```json
 {
-  "idempotencyKey": "compra-corolla-0001"
+  "make": "Toyota",
+  "model": "Corolla XEi",
+  "year": 2026,
+  "color": "Cinza",
+  "price": 147990.00,
+  "version": 1
 }
 ```
 
-## Fluxo de compra
+Corpo da reserva solicitada por Vendas:
 
-1. O comprador se cadastra, confirma a conta e faz login no Cognito, serviço externo à API.
-2. O Cognito emite um *access token* JWT. O cliente o envia em `Authorization: Bearer <token>`.
-3. A API valida assinatura, emissor e os *claims* `token_use=access` e `client_id`; então obtém o `sub` do comprador.
-4. O caso de uso inicia uma transação com isolamento `ReadCommitted` e bloqueia a linha do veículo com `SELECT ... FOR UPDATE`.
-5. A aplicação valida a existência e disponibilidade do veículo. Um veículo já vendido resulta em `409 Conflict`; um inexistente, em `404 Not Found`.
-6. É criada a venda com o preço atual como *snapshot*, data UTC, `sub` do comprador e, quando fornecida, a chave de idempotência.
-7. O veículo passa para o estado `Sold`, a venda é persistida e a transação é confirmada.
-8. As restrições únicas de `sales.vehicle_id` e de `(buyer_subject, idempotency_key)` fornecem uma segunda barreira de consistência no banco.
+```json
+{
+  "expectedPrice": 147990.00
+}
+```
 
-Esse fluxo garante que duas requisições concorrentes não concluam duas vendas para o mesmo veículo.
+## Ciclo de vida do veículo
 
-## Estratégia de autenticação
+```text
+cadastro ──> Available ──reserva──> Reserved ──confirmação──> Sold
+                    ^                    │
+                    └────liberação───────┘
+```
 
-O Amazon Cognito é o provedor de identidade e fica totalmente apartado do domínio e do banco transacional da aplicação. A API utiliza JWT Bearer com a autoridade configurada por `Authentication__Authority`; não há autenticação local nem persistência de credenciais.
+1. Um administrador cadastra o veículo, inicialmente `Available`.
+2. Enquanto disponível, ele pode ser atualizado. Cada alteração incrementa `version` e gera um item de outbox.
+3. Ao iniciar uma venda, Vendas pede a reserva com seu `saleId` e o preço esperado.
+4. Veículos bloqueia a linha com `SELECT ... FOR UPDATE`, compara o preço, muda para `Reserved` e grava uma reserva com snapshot.
+5. Após o pagamento, Vendas solicita confirmação ou liberação. A primeira leva a `Sold`; a segunda retorna a `Available`.
+6. Veículos reservados ou vendidos não podem ser editados. Transação, bloqueio pessimista e versão impedem operações concorrentes incompatíveis.
 
-- **Catálogos e health check:** públicos.
-- **Compra:** requer *access token* válido de usuário autenticado.
-- **Cadastro e edição de veículo:** requer *access token* válido e o grupo `admins` no *claim* `cognito:groups`.
-- **Rastreabilidade de venda:** somente o `sub` é salvo em `sales.buyer_subject`, sem dados pessoais identificáveis.
-- **Scalar:** OAuth 2.0 Authorization Code com PKCE, para autenticar sem expor senha ao cliente da documentação.
+## Integração com Vendas
+
+A comunicação ocorre nos dois sentidos:
+
+- **Vendas → Veículos:** chamadas síncronas reservam, confirmam ou liberam. O `saleId` correlaciona os serviços e torna repetições seguras; `X-Service-Key` autentica as chamadas.
+- **Veículos → Vendas:** cadastro, edição e mudança de status criam registros em `catalog_outbox` na mesma transação. O `CatalogPublisherWorker` os envia em lotes para `PUT /internal/v1/catalog/vehicles/{vehicleId}` e registra sucesso ou retentativa.
+
+Vendas mantém sua projeção para listagens e conduz compra e pagamento. Veículos continua sendo a autoridade sobre disponibilidade e rejeita preço divergente, veículo indisponível, reserva de outra venda e transições terminais inválidas.
+
+## Autenticação e autorização
+
+- endpoints administrativos validam JWT do Cognito, `token_use=access`, `client_id` e o grupo `admins` em `cognito:groups`;
+- endpoints internos usam uma chave compartilhada específica em `X-Service-Key`;
+- health checks são públicos;
+- esta aplicação não armazena senha, CPF, nome ou e-mail de comprador, somente o `saleId` técnico recebido de Vendas.
 
 ## Modelagem do banco
 
-O PostgreSQL possui duas tabelas transacionais, criadas por migrations do EF Core.
+O PostgreSQL exclusivo deste microsserviço possui três tabelas gerenciadas por migrations:
 
 | Tabela | Campos relevantes | Regras e índices |
 | --- | --- | --- |
-| `vehicles` | `id`, `make`, `model`, `year`, `color`, `price`, `status`, timestamps UTC e `version` | `price > 0`; índice `(status, price, id)` para a listagem de disponíveis; `version` é token de concorrência. |
-| `sales` | `id`, `vehicle_id`, `buyer_subject`, `sale_price`, `purchased_at_utc`, `idempotency_key` | FK para `vehicles`; `vehicle_id` único, garantindo uma venda por veículo; `sale_price > 0`; índice `(sale_price, id)`; chave única parcial para `(buyer_subject, idempotency_key)` quando a chave foi informada. |
+| `vehicles` | `id`, dados do veículo, `status`, `reservation_sale_id`, `sold_sale_id`, timestamps e `version` | Preço/versão positivos; coerência do estado; índice `(status, price, id)`; `version` é token de concorrência. |
+| `vehicle_reservations` | `sale_id`, `vehicle_id`, `status`, snapshots dos dados/versão e timestamps | `sale_id` é PK; FK para `vehicles`; snapshots positivos; coerência de timestamps; índice `(vehicle_id, created_at_utc)`. |
+| `catalog_outbox` | `id`, `vehicle_id`, `vehicle_version`, `payload_json`, processamento, tentativas, erro e lease | FK; chave única `(vehicle_id, vehicle_version)`; índices para pendências e leases expirados. |
 
-A relação é um para um: um veículo pode não ter venda enquanto está disponível e, após a compra, possui exatamente uma venda. As datas são armazenadas como `timestamp with time zone` em UTC e o valor vendido não muda caso o preço de catálogo seja alterado posteriormente.
+A reserva preserva o snapshot do veículo no momento da criação. O banco de Vendas é separado e está documentado em [AutoSale.Sales](https://github.com/ARC-373/AutoSale.Sales).
 
 ## Testes
 
-Os projetos de teste são executados por:
-
 ```powershell
-dotnet test AutoSale.slnx --configuration Release
+dotnet test AutoSale.Vehicles.slnx --configuration Release
 ```
 
-| Tipo | Projeto | Cobertura |
+| Tipo | Projeto | Foco |
 | --- | --- | --- |
-| Domínio | `AutoSale.Domain.UnitTests` | Invariantes de `Vehicle`, `Sale` e dos tipos de resultado: validações, transições de estado e erros de domínio. |
-| Aplicação | `AutoSale.Application.UnitTests` | Handlers de cadastro, edição, listagem e compra com *test doubles* para portas externas; inclui compra autenticada, transação e conflito por veículo vendido. |
-| Arquitetura | `AutoSale.ArchitectureTests` | Impede referências das camadas internas para as externas, preservando as regras da Clean Architecture. |
-| Integração | `AutoSale.Api.IntegrationTests` | Projeto preparado para validar a integração HTTP da API. |
+| Domínio | `AutoSale.Vehicles.Domain.UnitTests` | Invariantes, estados e transições de veículos, reservas e outbox. |
+| Aplicação | `AutoSale.Vehicles.Application.UnitTests` | Cadastro, atualização, reserva, confirmação, liberação e publicação do catálogo. |
+| API | `AutoSale.Vehicles.Api.UnitTests` | Controllers, HTTP, autenticação por chave e políticas. |
+| Infraestrutura | `AutoSale.Vehicles.Infrastructure.UnitTests` | Cliente HTTP de Vendas, URI, autenticação, respostas, timeout e indisponibilidade. |
+| Integração | `AutoSale.Vehicles.Api.IntegrationTests` | Pipeline HTTP, health checks, autenticação e API exposta. |
+| Arquitetura | `AutoSale.Vehicles.ArchitectureTests` | Dependências permitidas entre as camadas. |
+
+Testes entre os dois serviços devem ser executados após ambos os ambientes Docker estarem ativos, validando sincronização, reserva e conclusão ou cancelamento da venda.
 
 ## CI/CD
 
-O workflow [`.github/workflows/ci.yml`](.github/workflows/ci.yml) é executado em todo Pull Request, em *push* para `master` e manualmente. Ele implementa a esteira de integração e validação de entrega em três estágios:
+O workflow [`.github/workflows/ci.yml`](.github/workflows/ci.yml) é acionado em Pull Requests, *pushes* para `master` e manualmente. A esteira restaura dependências, compila em Release, executa todos os testes, publica resultados TRX, constrói a imagem Docker e valida inicialização e health check.
 
-1. **Build and test:** faz checkout, instala .NET 10, executa `dotnet restore`, `dotnet build` em Release e `dotnet test`; os resultados TRX são publicados como artefato mesmo quando há falha.
-2. **Docker build:** somente após testes aprovados, constrói a imagem da API com `docker compose build api`.
-3. **Compose deploy validation:** gera configurações de CI, valida o Compose, inicializa a API, aguarda o endpoint `/health`, coleta diagnósticos e remove containers/volumes ao final.
+Isso permite versionar, testar e implantar Veículos independentemente de Vendas, conforme a arquitetura de microsserviços da Fase 4.
 
-O fluxo reforça a prática exigida pelo Tech Challenge de mudanças revisadas via Pull Request e verificadas automaticamente antes da integração. A última etapa é uma validação automatizada de implantação local via Docker Compose; a publicação em um ambiente cloud requer a configuração das credenciais e do destino de hospedagem correspondente, sem versionar segredos.
+## Observabilidade
 
-## Observabilidade e operação
-
-A API instrumenta traces e métricas de ASP.NET Core, chamadas HTTP e runtime com OpenTelemetry. Os sinais são enviados via OTLP ao OpenTelemetry Collector definido no Compose. A identidade do serviço e o ambiente são configuráveis por variáveis como `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES` e `OTEL_EXPORTER_OTLP_ENDPOINT`.
-
-Para diagnóstico local:
-
-```powershell
-docker compose ps
-docker compose logs api
-docker compose logs postgres
-```
-
-O endpoint `GET /health` verifica a aplicação e o `AutoSaleDbContext`, permitindo que o Compose e o pipeline aguardem a prontidão da API.
+A API instrumenta ASP.NET Core, chamadas HTTP e runtime com OpenTelemetry e envia traces e métricas via OTLP ao Collector do Compose. Para diagnóstico, use `docker compose ps`, `docker compose logs vehicles-api` e os logs do worker. IDs de veículo e venda correlacionam o fluxo distribuído sem replicar dados pessoais.

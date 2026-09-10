@@ -1,3 +1,5 @@
+using AutoSale.Domain.Catalog;
+using AutoSale.Domain.Reservations;
 using AutoSale.Domain.Vehicles;
 using Microsoft.EntityFrameworkCore;
 
@@ -11,6 +13,10 @@ public sealed class AutoSaleDbContext : DbContext
     }
 
     public DbSet<Vehicle> Vehicles => Set<Vehicle>();
+
+    public DbSet<VehicleReservation> VehicleReservations => Set<VehicleReservation>();
+
+    public DbSet<CatalogOutbox> CatalogOutbox => Set<CatalogOutbox>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {

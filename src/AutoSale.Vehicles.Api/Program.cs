@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using AutoSale.Api.Authentication;
 using AutoSale.Api.Authorization;
 using AutoSale.Api.Extensions;
@@ -5,6 +6,8 @@ using AutoSale.Api.Middleware;
 using AutoSale.Infrastructure;
 using AutoSale.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.OpenApi;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
@@ -24,8 +27,29 @@ if (string.IsNullOrWhiteSpace(connectionString))
     connectionString = "Host=localhost;Database=autosale";
 }
 
-builder.Services.AddProblemDetails();
-builder.Services.AddControllers();
+builder.Services.AddProblemDetails(options =>
+{
+    options.CustomizeProblemDetails = context =>
+    {
+        context.ProblemDetails.Extensions.TryAdd("code", "request.invalid");
+        context.ProblemDetails.Extensions.TryAdd("traceId", context.HttpContext.TraceIdentifier);
+    };
+});
+builder.Services
+    .AddControllers(options =>
+    {
+        options.ModelBindingMessageProvider.SetValueMustNotBeNullAccessor(_ => "A required value was not provided.");
+    })
+    .AddJsonOptions(options => options.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter()));
+builder.Services.Configure<ApiBehaviorOptions>(options =>
+{
+    options.InvalidModelStateResponseFactory = context => new BadRequestObjectResult(ApiProblemDetails.Create(
+        context.HttpContext,
+        StatusCodes.Status400BadRequest,
+        "request.invalid",
+        "Validation",
+        "The request body or parameters are invalid."));
+});
 builder.Services.AddOpenApi(options =>
 {
     options.AddDocumentTransformer((document, _, _) =>
@@ -51,6 +75,13 @@ builder.Services.AddOpenApi(options =>
                 }
             }
         };
+        document.Components.SecuritySchemes["ServiceKey"] = new OpenApiSecurityScheme
+        {
+            Type = SecuritySchemeType.ApiKey,
+            In = ParameterLocation.Header,
+            Name = ServiceKeyAuthenticationDefaults.DefaultHeaderName,
+            Description = "Credential used exclusively by the Sales service."
+        };
 
         return Task.CompletedTask;
     });
@@ -59,7 +90,7 @@ builder.Services.AddExceptionHandler<ExceptionHandlingMiddleware>();
 builder.Services.AddAutoSaleAuthentication(builder.Configuration, builder.Environment);
 builder.Services.AddAutoSaleAuthorization();
 builder.Services.AddApplicationHandlers();
-builder.Services.AddInfrastructure(connectionString);
+builder.Services.AddInfrastructure(builder.Configuration, connectionString);
 builder.Services.AddHealthChecks()
     .AddDbContextCheck<AutoSaleDbContext>("postgresql");
 builder.Services.AddOpenTelemetry()
@@ -94,6 +125,10 @@ app.UseAuthorization();
 
 app.MapControllers();
 app.MapHealthChecks("/health").AllowAnonymous();
+app.MapHealthChecks("/health/live", new HealthCheckOptions
+{
+    Predicate = _ => false
+}).AllowAnonymous();
 app.MapOpenApi();
 
 app.MapScalarApiReference("/docs", options => options
