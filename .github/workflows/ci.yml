@@ -57,7 +57,7 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Build API image
-        run: docker compose build api
+        run: docker compose build vehicles-api
 
   compose-deploy-validation:
     name: Validate Docker Compose deployment
@@ -96,7 +96,7 @@ jobs:
         run: docker compose config --quiet
 
       - name: Start API stack
-        run: docker compose up --detach --build api
+        run: docker compose up --detach --build vehicles-api
 
       - name: Wait for API health check
         run: |
